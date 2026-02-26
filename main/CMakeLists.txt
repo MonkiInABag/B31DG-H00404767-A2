@@ -1,0 +1,9 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "tasks_a2.c"
+        "pins.c"
+        "workkernel.c"
+    INCLUDE_DIRS
+        "include"
+)
