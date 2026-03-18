@@ -1,9 +1,14 @@
 idf_component_register(
     SRCS
         "main.c"
-        "tasks_a2.c"
         "pins.c"
         "workkernel.c"
+        "tasks.c"
+        "monitor.c"
     INCLUDE_DIRS
         "include"
+    REQUIRES
+        esp_driver_gpio
+        esp_driver_pcnt
+        esp_timer
 )
