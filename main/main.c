@@ -3,8 +3,8 @@
 #include <stdbool.h>
 
 #include "esp_timer.h"
-#include "esp_log.h"
 #include "esp_task_wdt.h"
+#include "rom/ets_sys.h"
 
 #include "driver/gpio.h"
 
@@ -13,15 +13,16 @@
 #include "tasks.h"
 #include "monitor.h"
 
+
 // Task scheduling parameters
-#define FRAME_US 10000LL
+#define FRAME_US 10000
 #define HYPERFRAME_FRAMES 10
-#define TASKS_GAURD_TIME_US 2700LL
+#define TASKS_GAURD_TIME_US 3200
 
 // Task execution state
 static int64_t T0_us = 0;
-static int last_frame = -1;
-static int frame_ran_s = -1;
+static int64_t nextFrame_us = 0;
+static int current_frame = 0;
 
 // Forward declarations for task runners
 uint32_t s_id = 0;
@@ -67,6 +68,14 @@ static void Run_TaskD(void)
     endTaskD();
 }
 
+static void Run_TaskS(void)
+{
+    if (pins_take_sporadic_pending()) {
+        beginTaskS(s_id++);
+        task_S();
+        endTaskS();
+    }
+}
 
 void app_main(void)
 {
@@ -76,7 +85,7 @@ void app_main(void)
     monitorInit();
 
     // Configure periodic and final reports
-    monitorSetPeriodicReportEverySeconds(10);
+    monitorSetPeriodicReportEverySeconds(0);
     monitorSetFinalReportAfterSeconds(60);
 
     // Disable task watchdog
@@ -91,107 +100,123 @@ void app_main(void)
     T0_us = pins_sync_T0_us();
     synch();
 
+    nextFrame_us = T0_us;
+    current_frame = 0;
+
     while (1)
     {
-        // Poll monitor for any reports to print
-        monitorPollReports();
-
-        // Check deadlines and set error LED if any deadline was missed
-        if (!monitorAllDeadlinesMet())
+        // Wait until the exact start of this frame
+        while (esp_timer_get_time() < nextFrame_us)
         {
-            gpio_set_level(PIN_ERROR_LED, 1);
-        }
+            monitorPollReports();
 
-        // Determine current frame based on time elapsed since T0
-        int64_t now_us = esp_timer_get_time();
-        int64_t elapsed_us = now_us - T0_us;
-        int frame = (int)((elapsed_us / FRAME_US) % HYPERFRAME_FRAMES);
-
-        // Run tasks for the current frame if not already run
-        if (frame != last_frame) {
-            last_frame = frame;
-
-            switch (frame) {
-                case 0:
-                    Run_TaskA();
-                    Run_TaskB();
-                    Run_TaskAGG();
-                    break;
-
-                case 1:
-                    Run_TaskA();
-                    Run_TaskC();
-                    break;
-
-                case 2:
-                    Run_TaskA();
-                    Run_TaskB();
-                    Run_TaskAGG();
-                    break;
-
-                case 3:
-                    Run_TaskA();
-                    Run_TaskD();
-                    break;
-
-                case 4:
-                    Run_TaskA();
-                    Run_TaskB();
-                    Run_TaskAGG();
-                    break;
-
-                case 5:
-                    Run_TaskA();
-                    Run_TaskC();
-                    break;
-
-                case 6:
-                    Run_TaskA();
-                    Run_TaskB();
-                    Run_TaskAGG();
-                    break;
-
-                case 7:
-                    Run_TaskA();
-                    Run_TaskD();
-                    break;
-
-                case 8:
-                    Run_TaskA();
-                    Run_TaskB();
-                    Run_TaskAGG();
-                    break;
-
-                case 9:
-                    Run_TaskA();
-                    break;
-
-                default:
-                    break;
-            }   
-        }
-        // After running the frame's tasks, check if we can run the sporadic 
-        if (frame_ran_s != frame) 
-        {
-            // Calculate time left in the current frame after task execution
-            int64_t post_tasks_us = esp_timer_get_time();
-            int64_t tasks_exec_us = post_tasks_us - T0_us;
-            int64_t current_frameIDX = (tasks_exec_us / FRAME_US);
-            int64_t next_frame_start_us = T0_us + (current_frameIDX + 1) * FRAME_US;
-            int64_t time_left_us = next_frame_start_us - post_tasks_us;
-
-            // If there is enough time left in the frame, check for sporadic pending and run Task S
-            if (time_left_us >= TASKS_GAURD_TIME_US) 
+            //checks if any dealienes are missed
+            if (!monitorAllDeadlinesMet())
             {
-                // Check if there is a pending sporadic event and run Task S if so
-                if(pins_take_sporadic_pending()) {
-                    beginTaskS(s_id++);
-                    task_S();
-                    endTaskS();
-                    frame_ran_s = frame; 
-                }
+                gpio_set_level(PIN_ERROR_LED, 1);
             }
+
+            ets_delay_us(50);
         }
 
+        // Update the current frame based on the current time to handle any drift
+        int64_t now_us = esp_timer_get_time();
+        // if behind schedule, catch up to expected frame based on current time
+        while (now_us >= nextFrame_us + FRAME_US)
+        {
+            nextFrame_us += FRAME_US;
+            current_frame = (current_frame + 1) % HYPERFRAME_FRAMES;
+            now_us = esp_timer_get_time();
+        }
+
+        // Calculate the end time of this frame for later slack calculations
+        int64_t frame_end_us = nextFrame_us + FRAME_US;
+
+        // Run the fixed periodic tasks for this frame
+        switch (current_frame) {
+            case 0:
+                Run_TaskA();
+                Run_TaskB();
+                Run_TaskAGG();
+                break;
+
+            case 1:
+                Run_TaskA();
+                Run_TaskC();
+                break;
+
+            case 2:
+                Run_TaskA();
+                Run_TaskB();
+                Run_TaskAGG();
+                break;
+
+            case 3:
+                Run_TaskA();
+                Run_TaskD();
+                break;
+
+            case 4:
+                Run_TaskA();
+                Run_TaskB();
+                Run_TaskAGG();
+                break;
+
+            case 5:
+                Run_TaskA();
+                Run_TaskC();
+                break;
+
+            case 6:
+                Run_TaskA();
+                Run_TaskB();
+                Run_TaskAGG();
+                break;
+
+            case 7:
+                Run_TaskA();
+                Run_TaskD();
+                break;
+
+            case 8:
+                Run_TaskA();
+                Run_TaskB();
+                Run_TaskAGG();
+                break;
+
+            case 9:
+                Run_TaskA();
+                break;
+
+            default:
+                break;
+        }
+
+        // Try to run one sporadic job only if there is enough slack left
+        int64_t post_tasks_us = esp_timer_get_time();
+        int64_t time_left_us = frame_end_us - post_tasks_us;
+
+        // Conservative: only allow S in frames that actually have space
+        if (time_left_us >= TASKS_GAURD_TIME_US)
+        {
+            Run_TaskS();
+        }
+
+        // Wait out the rest of the frame so the 10 ms frame is enforced
+        while (esp_timer_get_time() < frame_end_us)
+        {
+            monitorPollReports();
+
+            if (!monitorAllDeadlinesMet())
+            {
+                gpio_set_level(PIN_ERROR_LED, 1);
+            }
+
+            ets_delay_us(50);
+        }
+
+        // Advance to the next exact frame boundary
+        nextFrame_us += FRAME_US;
+        current_frame = (current_frame + 1) % HYPERFRAME_FRAMES;
     }
 }
