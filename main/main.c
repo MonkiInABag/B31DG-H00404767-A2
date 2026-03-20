@@ -196,7 +196,7 @@ void app_main(void)
         int64_t post_tasks_us = esp_timer_get_time();
         int64_t time_left_us = frame_end_us - post_tasks_us;
 
-        // Conservative: only allow S in frames that actually have space
+        // Only allow S in frames that actually have space
         if (time_left_us >= TASKS_GAURD_TIME_US)
         {
             Run_TaskS();
